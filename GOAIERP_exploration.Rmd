@@ -1,0 +1,225 @@
+---
+title: "GOAIERP surface trawl exploration"
+author: "Alberto Rovellini"
+date: "5/26/2021"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+This document reads Jamal's GOAIERP surface trawl data and does some exploration, such as mapping, estimating sample size, listing the species and the life stages, and estimating the effort.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include = FALSE}
+library(tidyverse)
+library(sf)
+library(rbgm)
+library(readxl)
+library(maps)
+library(mapdata)
+library(lubridate)
+library(kableExtra)
+library(viridis)
+```
+
+```{r}
+select <- dplyr::select
+```
+
+Read data. The data is Jamal's Excel spreadsheet as it was shared with me.
+```{r}
+data <- read_excel("data/Jamal GoA Catch.xlsx")
+```
+
+Clean the data.
+```{r}
+# make sure that there are no spaces in the column names
+data <- data %>% set_names(gsub(" ", "_", names(data)))
+data <- data %>% set_names(gsub("\\^", "", names(data)))
+
+# keep time and get rid of 1899 date
+data <- data %>% mutate(EQTime = strftime(EQTime, format = "%H:%M:%S", tz = "GMT"),
+                        Haulback_Time = strftime(Haulback_Time, format = "%H:%M:%S", tz = "GMT"))
+# add year and month
+data <- data %>% mutate(Year = year(HaulDate), Month = month(HaulDate), Day = day(HaulDate))
+
+# add hauljoin based on: station, year, month, day, EQTime
+data <- data %>% mutate(HaulJoin = paste(StationID,Year,Month,Day,EQTime,sep="_"))
+
+# filter out empty coordinates (0.12% of the data points)
+data <- data %>% filter(!is.na(EQLatitude))
+```
+
+Ask Jamal for clarification around MethodCode and LHSCode.
+
+## Spatial extent
+
+Map. Convert to sf for convenience.
+```{r, fig.width=12, fig.height=14}
+data_sf <- data %>% st_as_sf(coords = c("EQLongitude","EQLatitude"), crs = 4326)
+
+# bring in some coastline
+coast <- map("worldHires", regions = c("Canada", "USA"), plot = FALSE, fill = TRUE)
+coast <- coast %>% st_as_sf()
+
+ggplot()+
+  geom_sf(data = data_sf)+
+  geom_sf(data = coast)+
+  coord_sf(xlim = c(-160,-130), ylim = c(54,60))+
+  theme_minimal()+
+  facet_wrap(~Year, ncol = 2)
+```
+
+Different stations and areas sampled in different years.
+
+## Overlap with Atlantis GOA
+
+How does this map to the Atlantis GOA geometry?
+```{r, fig.width=12, fig.height=14}
+atlantis_bgm <- read_bgm("data/GOA_WGS84_V4_final.bgm")
+atlantis_sf <- atlantis_bgm %>% box_sf() %>% st_transform(crs = 4326)
+
+atlantis_extent <- st_bbox(atlantis_sf)
+
+ggplot()+
+  geom_sf(data = data_sf)+
+  geom_sf(data = coast)+
+  geom_sf(data = atlantis_sf, fill = NA, color = "blue")+
+  coord_sf(xlim = c(atlantis_extent$xmin, atlantis_extent$xmax), ylim = c(atlantis_extent$ymin, atlantis_extent$ymax))+
+  theme_minimal()+
+  facet_wrap(~Year, ncol = 2)
+```
+
+Many of the hauls extend off the shelf, pushing into the Atlantis boundary boxes and beyond in some cases. Therefore, the data points we could use for Atlantis are fewer than the stations sampled for the GOAIERP, unless we decided to use a prediction grid for an area larger than the model domain, and then to map to Atlantis only the predictions that fall within the Atlantis boxes. The advantage of this is that we have more data points to fit a geostatistical model.
+
+Let's see how many boxes contain at least one data point from these surveys.
+```{r}
+atlantis_goaierp <- atlantis_sf %>% st_join(data_sf)
+
+boxes_with_data <- atlantis_goaierp %>% na.omit() %>% select(.bx0) %>% st_set_geometry(NULL) %>% distinct() %>% pull()
+
+paste0("Atlantis boxes with GOAIERP data points are: ", paste(boxes_with_data, collapse = ", ", sep = ", "))
+```
+
+Have a look.
+```{r, fig.width=12, fig.height=8}
+# retrieve coordinates of the GOAIERP hauls and stitch them to the joint data 
+coords <- data.frame(select(data,HaulJoin), st_coordinates(data_sf))
+atlantis_goaierp <- atlantis_goaierp %>% left_join(coords, by = "HaulJoin")
+atlantis_goaierp <- atlantis_goaierp %>% na.omit()
+
+# get the extent of the GOAIERP data for plotting
+goaierp_extent <- st_bbox(data_sf)
+
+ggplot()+
+  geom_sf(data = atlantis_goaierp, fill = NA, color = "blue")+
+  geom_point(data = atlantis_goaierp, aes(x = X, y = Y))+
+  coord_sf(xlim = c(goaierp_extent$xmin, goaierp_extent$xmax), ylim = c(goaierp_extent$ymin, goaierp_extent$ymax))+
+  theme_minimal()+
+  facet_wrap(~Year)
+```
+
+## Species sampled
+
+What species were sampled, and how often do they appear in the tows? 
+```{r}
+all_hauls <- data %>% select(HaulJoin) %>% distinct() %>% pull()
+all_species <- data %>% select(CommonName) %>% distinct() %>% pull()
+
+# out of all tows, how many times does a group appear? To do this, because different LH stages of the same species may appear within the same hauls, select species names and hauls, and then take distinct rows only.
+
+distinct_species <- data %>% select(CommonName, HaulJoin) %>% distinct() # dropped 900 double occurrences
+
+occurrences <- distinct_species %>% group_by(CommonName) %>% 
+  tally() %>% 
+  ungroup() %>% 
+  mutate(prop = n/length(all_hauls)) %>% 
+  arrange(desc(prop))
+
+head(occurrences, 15)
+```
+
+Salmon species and gelatinous zooplankton seem well represented. Let's see by life stage.
+```{r}
+data %>% group_by(CommonName,LHSCode) %>%
+  tally() %>% 
+  ungroup() %>% 
+  mutate(prop = n/length(all_hauls)*100) %>% 
+  arrange(desc(prop)) %>%
+  #filter(LHSCode != "U") %>% # filtering out unidentified life stages
+  select(-n) %>%
+  kable(align = 'llc', format = "markdown", 
+      col.names = c("Species", "Life stage", "% of hauls with catch"))
+```
+
+Need to check the meaning of the life stages codes with Jamal, but it looks like most occurrences in the surface trawl data are for juveniles, immature individuals, and age 0. What are the differences between all these?
+
+## Calculate CPUE
+
+Let's calculate CPUE by tow. This will be based on Count and Weight divided by effort, to obtain CPUE in kg and individuals per km$^2$. Do this by life stage.
+
+**Note**: I presume the "Weight" column is in grams, so divide by 1000 to convert it to kg.
+```{r}
+data <- data %>% mutate(CPUE_kg_km2 = Weight/1000/Effort_area_km2, CPUE_num_km2 = Count/Effort_area_km2)
+```
+
+Visualise for one species and one life stage, say for juvenile pink salmon.
+```{r, fig.width=12, fig.height=6}
+#do juvenile pink salmon
+this_species <- data %>% filter(CommonName == "Pink Salmon" & LHSCode == "J")
+this_species_sf <- this_species %>% st_as_sf(coords = c("EQLongitude","EQLatitude"), crs = 4326)
+
+ggplot()+
+  geom_sf(data = this_species_sf, aes(color = log1p(CPUE_kg_km2)))+
+  scale_color_viridis()+
+  geom_sf(data = coast)+
+  coord_sf(xlim = c(goaierp_extent$xmin, goaierp_extent$xmax), ylim = c(goaierp_extent$ymin, goaierp_extent$ymax))+
+  theme_minimal()+
+  facet_wrap(~Year)+
+  labs(title = "Juvenile pink salmon CPUE")
+```
+
+This does not include zero catches. We could add them to the individual species/stage combination, based on the list of all hauls.
+```{r}
+species_hauls <- this_species %>% select(HaulJoin) %>% distinct() %>% pull()
+zero_hauls <- setdiff(all_hauls, species_hauls)
+  
+empty_hauls <- data %>% filter(HaulJoin %in% zero_hauls) %>% mutate(CommonName = this_species$CommonName[1],
+                                                                    LHSCode = this_species$LHSCode[1],
+                                                                    Count = 0,
+                                                                    Weight = 0,
+                                                                    CPUE_kg_km2 = 0,
+                                                                    CPUE_num_km2 = 0)
+
+# attach this to the species data
+cpue <- rbind(this_species, empty_hauls)
+```
+
+View.
+```{r, fig.width=12, fig.height=6}
+cpue_sf <- cpue %>% st_as_sf(coords = c("EQLongitude","EQLatitude"), crs = 4326)
+cpue_extent <- st_bbox(cpue_sf)
+
+ggplot()+
+  geom_sf(data = cpue_sf, aes(color = log1p(CPUE_kg_km2)))+
+  scale_color_viridis()+
+  geom_sf(data = coast)+
+  coord_sf(xlim = c(cpue_extent$xmin, cpue_extent$xmax), ylim = c(cpue_extent$ymin, cpue_extent$ymax))+
+  theme_minimal()+
+  facet_wrap(~Year)+
+  labs(title = paste(this_species$LHSCode[1], this_species$CommonName, "CPUE - with zero catches", sep = " "))
+```
+
+Save data to process with sdmTMB.
+```{r}
+goaierp_data <- data
+save(goaierp_data, file="data/goaierp_data.Rdata")
+```
+
