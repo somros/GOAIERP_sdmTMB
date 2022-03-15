@@ -19,14 +19,6 @@ select <- dplyr::select
 # Settings for sdmTMB.
 cutoff <- 20
 
-# #Workflow:
-
-# 1. read all data as modified in the exploratory script
-# 2. assume that there are no other hauls than those that some catch is reported for, and get levels with hauljoin
-# 3. pick a species / stage
-# 4. attach (rbind) empty hauls and make the CPUE 0 for those
-# 5. pipe it to the sdmTMB script
-
 # import data
 load("data/goaierp_data.Rdata")
 
@@ -48,7 +40,7 @@ atlantis_bbox <- atlantis_sf %>% st_bbox()
 
 # add coastline 
 coast <- map("worldHires", regions = c("USA","Canada"), plot = FALSE, fill = TRUE)
-coast_sf <- coast %>% st_as_sf() %>% st_transform(crs=atlantis_crs) %>% st_combine()
+coast_sf <- coast %>% st_as_sf() %>% st_transform(crs=atlantis_crs) %>% st_combine() # need combine() for distances
 
 # load depth grid and calculate, for each point, distance from shore
 load("data/atlantis_grid_depth.Rdata")
@@ -84,106 +76,107 @@ goaierp_data <- goaierp_sf %>%
 all_hauls <- goaierp_data %>% select(HaulJoin) %>% distinct() %>% pull()
 all_groups <- goaierp_data %>% select(Atlantis.group) %>% distinct() %>% pull()
 
-# goaierp_knitter <- function(this_group){
-#   data_species <- goaierp_data %>% filter(Atlantis.group == this_group)
-#   
-#   all_stages <- data_species %>% select(LHSCode) %>% distinct() %>% pull() # stages are different for different species
-#   
-#   lhs_knitter <- function(this_stage){
-#     data_species <- data_species %>% filter(LHSCode == this_stage)
-#     this_species_hauls <- data_species %>% select(HaulJoin) %>% distinct() %>% pull()
-#     empty_hauls <- setdiff(all_hauls, this_species_hauls)
-#     
-#     empty_template <- goaierp_data %>% filter(HaulJoin %in% empty_hauls) %>%
-#       select(Year,HaulJoin,EQLatitude,EQLongitude,Distance.km,Atlantis.group,LHSCode) %>%
-#       mutate(Atlantis.group = NA,
-#              LHSCode = NA,
-#              CPUE_kg_km2 = 0,
-#              CPUE_num_km2 = 0) %>%
-#       distinct() %>%
-#       select(Year,HaulJoin,EQLatitude,EQLongitude,Distance.km,Atlantis.group,LHSCode,CPUE_kg_km2,CPUE_num_km2)
-#     # bind the empty hauls and the catch data for the species
-#     data_species <- rbind(data_species, empty_template)
-#     
-#     # select columns and rename them
-#     
-#     data_species <- data_species %>% select(Year,HaulJoin,EQLatitude,EQLongitude,Distance.km,Atlantis.group,LHSCode,CPUE_kg_km2,CPUE_num_km2) %>%
-#       set_names(c(
-#         'year',
-#         'hauljoin',
-#         'lat',
-#         'lon',
-#         'distance',
-#         'name',
-#         'stage',
-#         'biom_kgkm2',
-#         'num_km2'))
-#     
-#     # drop NA catches
-#     data_species <- data_species %>% filter(!is.na(biom_kgkm2) & !is.na(num_km2))
-#     
-#     # pass this on to the sdmTMB markdown
-#     rmarkdown::render(
-#       'GOAIERP_sdmTMB.Rmd', 
-#       output_file = paste0('output/', this_group, '_', this_stage, '_', cutoff, '.html')
-#     )
-#     
-#     # apply to all stages for this species
-#   }
-#   purrr::map(all_stages, possibly(lhs_knitter,NA))
-# }
-# 
-# # apply to all species in the data
-# purrr::map(all_groups, possibly(goaierp_knitter,NA))
+goaierp_knitter <- function(this_group){
+  
+  data_species <- goaierp_data %>% filter(Atlantis.group == this_group)
 
+  all_stages <- data_species %>% select(LHSCode) %>% distinct() %>% pull() # stages are different for different species
+
+  lhs_knitter <- function(this_stage){
+    
+    data_species <- data_species %>% filter(LHSCode == this_stage)
+    this_species_hauls <- data_species %>% select(HaulJoin) %>% distinct() %>% pull()
+    empty_hauls <- setdiff(all_hauls, this_species_hauls)
+
+    empty_template <- goaierp_data %>% filter(HaulJoin %in% empty_hauls) %>%
+      select(Year,HaulJoin,EQLatitude,EQLongitude,Distance.km,Atlantis.group,LHSCode) %>%
+      mutate(Atlantis.group = NA,
+             LHSCode = NA,
+             CPUE_kg_km2 = 0,
+             CPUE_num_km2 = 0) %>%
+      distinct() %>%
+      select(Year,HaulJoin,EQLatitude,EQLongitude,Distance.km,Atlantis.group,LHSCode,CPUE_kg_km2,CPUE_num_km2)
+    # bind the empty hauls and the catch data for the species
+    data_species <- rbind(data_species, empty_template)
+
+    # select columns and rename them
+
+    data_species <- data_species %>% select(Year,HaulJoin,EQLatitude,EQLongitude,Distance.km,Atlantis.group,LHSCode,CPUE_kg_km2,CPUE_num_km2) %>%
+      set_names(c(
+        'year',
+        'hauljoin',
+        'lat',
+        'lon',
+        'distance',
+        'name',
+        'stage',
+        'biom_kgkm2',
+        'num_km2'))
+
+    # drop NA catches
+    data_species <- data_species %>% filter(!is.na(biom_kgkm2) & !is.na(num_km2))
+
+    # pass this on to the sdmTMB markdown
+    rmarkdown::render(
+      'GOAIERP_sdmTMB.Rmd',
+      output_file = paste0('output_1/', this_group, '_', this_stage, '_', cutoff, '.html')
+    )
+
+    # apply to all stages for this species
+  }
+  purrr::map(all_stages, possibly(lhs_knitter,NA))
+}
+
+# apply to all species in the data
+purrr::map(all_groups, possibly(goaierp_knitter,NA))
 
 ##########################################################################################################
 # same but without life stages
 
-goaierp_knitter_nostage <- function(this_group){
-  data_species <- goaierp_data %>% filter(Atlantis.group == this_group)
-  
-  data_species <- data_species %>% group_by(across(Year:Atlantis.group)) %>% summarise(CPUE_kg_km2=sum(CPUE_kg_km2),
-                                                                                       CPUE_num_km2=sum(CPUE_num_km2))
-  
-  # add empty hauls
-  this_species_hauls <- data_species %>% select(HaulJoin) %>% distinct() %>% pull()
-  empty_hauls <- setdiff(all_hauls, this_species_hauls)
-  
-  empty_template <- goaierp_data %>% filter(HaulJoin %in% empty_hauls) %>%
-    select(Year,HaulJoin,EQLatitude,EQLongitude,Distance.km,Atlantis.group) %>%
-    mutate(Atlantis.group = NA,
-           CPUE_kg_km2 = 0,
-           CPUE_num_km2 = 0) %>%
-    distinct() %>%
-    select(Year,HaulJoin,EQLatitude,EQLongitude,Distance.km,Atlantis.group,CPUE_kg_km2,CPUE_num_km2)
-  # bind the empty hauls and the catch data for the species
-  data_species <- rbind(data_species, empty_template)
-  
-  # select columns and rename them
-  
-  data_species <- data_species %>% select(Year,HaulJoin,EQLatitude,EQLongitude,Distance.km,Atlantis.group,CPUE_kg_km2,CPUE_num_km2) %>%
-    set_names(c(
-      'year',
-      'hauljoin',
-      'lat',
-      'lon',
-      'distance',
-      'name',
-      'biom_kgkm2',
-      'num_km2'))
-  
-  # drop NA catches
-  data_species <- data_species %>% filter(!is.na(biom_kgkm2) & !is.na(num_km2))
-  
-  # pass this on to the sdmTMB markdown
-  rmarkdown::render(
-    'GOAIERP_sdmTMB_nostages.Rmd', 
-    output_file = paste0('output/no_life_stages/', this_group, '_', cutoff, '.html')
-  )
-  
-  # apply to all stages for this species
-}
-
-purrr::map(all_groups, possibly(goaierp_knitter_nostage,NA))
+# goaierp_knitter_nostage <- function(this_group){
+#   data_species <- goaierp_data %>% filter(Atlantis.group == this_group)
+#   
+#   data_species <- data_species %>% group_by(across(Year:Atlantis.group)) %>% summarise(CPUE_kg_km2=sum(CPUE_kg_km2),
+#                                                                                        CPUE_num_km2=sum(CPUE_num_km2))
+#   
+#   # add empty hauls
+#   this_species_hauls <- data_species %>% select(HaulJoin) %>% distinct() %>% pull()
+#   empty_hauls <- setdiff(all_hauls, this_species_hauls)
+#   
+#   empty_template <- goaierp_data %>% filter(HaulJoin %in% empty_hauls) %>%
+#     select(Year,HaulJoin,EQLatitude,EQLongitude,Distance.km,Atlantis.group) %>%
+#     mutate(Atlantis.group = NA,
+#            CPUE_kg_km2 = 0,
+#            CPUE_num_km2 = 0) %>%
+#     distinct() %>%
+#     select(Year,HaulJoin,EQLatitude,EQLongitude,Distance.km,Atlantis.group,CPUE_kg_km2,CPUE_num_km2)
+#   # bind the empty hauls and the catch data for the species
+#   data_species <- rbind(data_species, empty_template)
+#   
+#   # select columns and rename them
+#   
+#   data_species <- data_species %>% select(Year,HaulJoin,EQLatitude,EQLongitude,Distance.km,Atlantis.group,CPUE_kg_km2,CPUE_num_km2) %>%
+#     set_names(c(
+#       'year',
+#       'hauljoin',
+#       'lat',
+#       'lon',
+#       'distance',
+#       'name',
+#       'biom_kgkm2',
+#       'num_km2'))
+#   
+#   # drop NA catches
+#   data_species <- data_species %>% filter(!is.na(biom_kgkm2) & !is.na(num_km2))
+#   
+#   # pass this on to the sdmTMB markdown
+#   rmarkdown::render(
+#     'GOAIERP_sdmTMB_nostages.Rmd', 
+#     output_file = paste0('output/no_life_stages/', this_group, '_', cutoff, '.html')
+#   )
+#   
+#   # apply to all stages for this species
+# }
+# 
+# purrr::map(all_groups, possibly(goaierp_knitter_nostage,NA))
 

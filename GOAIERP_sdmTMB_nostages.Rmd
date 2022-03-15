@@ -124,8 +124,8 @@ Rerun with extra optimization steps in case of gradient > 0.001.
 ```{r}
 if(abs(max(m_dist$gradients))>0.001){
   m_dist <- sdmTMB(
-  data = race_data, 
-  formula = biom_kgkm2 ~ 0 + s(depth, k = 5) + as.factor(year), 
+  data = goaierp_data, 
+  formula = biom_kgkm2 ~ 0 + s(distance, k = 5) + as.factor(year), 
   time = "year", 
   spde = goaierp_spde, 
   reml = TRUE,
@@ -133,9 +133,7 @@ if(abs(max(m_dist$gradients))>0.001){
   spatial_trend = FALSE, 
   spatial_only = FALSE,
   silent = FALSE,
-  control = sdmTMBcontrol(),
-  nlminb_loops = 1,
-  newton_steps = 3,
+  control = sdmTMBcontrol(nlminb_loops = 1, newton_steps = 3),
   family = tweedie(link = "log"))
 end.time <- Sys.time()
 }
@@ -243,12 +241,12 @@ atlantis_grid_means <- atlantis_grid %>% group_by(year, box_id) %>%
 predictions_by_box <- atlantis_sf %>% inner_join(atlantis_grid_means, by = "box_id")
 ```
 
-See estimates per box for all years combined. Silence boundary boxes as they throw the scale out of whack (and they do not need predictions). Plot BC part of the model domain only.
+See estimates per box for all years combined. Silence boundary boxes as they throw the scale out of whack (and they do not need predictions).
 ```{r, fig.width = 12, fig.height = 10}
 predictions_by_box <- predictions_by_box %>% rowwise() %>% mutate(mean_estimates = ifelse(isTRUE(boundary), NA, mean_estimates))
 
 ggplot()+
-  geom_sf(data = predictions_by_box[predictions_by_box$box_id<92,], aes(fill = log1p(mean_estimates)))+ # taking the log for visualisation
+  geom_sf(data = predictions_by_box, aes(fill = log1p(mean_estimates)))+ # taking the log for visualisation
   scale_fill_viridis(name = expression(paste("Log(CPUE) kg ", km^-2)))+
   theme_minimal()+
   geom_sf(data = coast_sf)+
@@ -301,7 +299,7 @@ ggplot(data = atlantis_grid, aes(log1p(estimates)))+
 means_all_years <- predictions_by_box %>% group_by(box_id, area, boundary) %>% summarise(all_years_kgkm2 = mean(mean_estimates)) %>% ungroup()
 
 ggplot()+
-  geom_sf(data = means_all_years[means_all_years$box_id < 92,], aes(fill = log1p(all_years_kgkm2)))+ # log for visualisation
+  geom_sf(data = means_all_years, aes(fill = log1p(all_years_kgkm2)))+ # log for visualisation
   scale_fill_viridis(name = expression(paste("Log(CPUE) kg ", km^-2)))+
   geom_sf(data = coast_sf, colour = "black", fill = "grey80")+
   coord_sf(xlim = c(coord_lims$xmin,coord_lims$xmax), ylim=c(coord_lims$ymin,coord_lims$ymax))+
@@ -317,7 +315,7 @@ cv_all_years <- predictions_by_box %>% group_by(box_id, area, boundary) %>% summ
 
 ```{r}
 ggplot()+
-  geom_sf(data = cv_all_years[cv_all_years$box_id < 92,], aes(fill = cv))+
+  geom_sf(data = cv_all_years, aes(fill = cv))+
   scale_fill_viridis(name = "CV of CPUE")+
   geom_sf(data = coast_sf, colour = "black", fill = "grey80")+
   theme_minimal()+
@@ -429,7 +427,7 @@ The current estimated CPUE is in kg km$^{-2}$. So, just I just turn that into bi
 ```{r}
 means_all_years <- means_all_years %>% mutate(biomass = all_years_kgkm2*area*1e-06*1e-03) # dividing by 1000 to get tons instead of kg
 
-means_alaska <- means_all_years %>% filter(box_id<92)
+means_alaska <- means_all_years #%>% filter(box_id<92)
 ```
 
 ```{r}

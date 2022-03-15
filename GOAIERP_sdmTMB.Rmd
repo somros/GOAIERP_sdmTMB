@@ -1,7 +1,7 @@
 ---
 title: "Atlantis biomass distributions with sdmTMB - lat, lon"
 author: "Alberto Rovellini"
-date: "June 1 2021"
+date: "3/14/2022"
 output:
   html_document:
     code_folding: hide
@@ -9,11 +9,9 @@ output:
     toc_float: true
 ---
 
-__This document is based on Gemma's code.__
+This is a template for fitting `sdmTMB` to GOAIERP surface trawl data. Starting with a version with lat, lon, and year at first - although year may or may not be appropriate to have given that different stations / areas are sampled every year. There is no depth here because it is surface trawl. We could work out temperature and Chl-a from MODIS or similar, but it may require some work and still we have the issue of the rationale of modelling distributions with environmental covariates. 
 
-This is a template for fitting sdmTMB to GOAIERP surface trawl data. Starting with a version with lat, lon, and year at first - although year may or may not be appropriate to have given that different stations / areas are sampled every year. There is no depth here because it is surface trawl. We could work out temperature and Chl-a from MODIS or similar, but it may require some work and still we have the issue of the rationale of modelling distributions with environmental covariates. Could ask Curry which variables they are considering. Pulling the variables will not be trivial (need to query MODIS NetCDF for the dates and then interpolate as best we can for the surface trawl data points, as well as for the prediction grid).
-
-For each species, it fits sdmTMB to life stages (need to check with Jamal the meaning of these) to predict CPUE in number of individuals per km$^{2}$. This predicted CPUE is then scaled up to box area in Atlantis, to get numbers of individuals per box and proportion of the total, which is what we need to initialise Atlantis.
+For each species, it fits `sdmTMB` to life stages (need to check with Jamal the meaning of these) to predict CPUE in number of individuals per km$^{2}$. This predicted CPUE is then scaled up to box area in Atlantis, to get numbers of individuals per box and proportion of the total, which is what we need to initialise Atlantis.
 
 This workflow is based on the following assumptions:
 
@@ -39,10 +37,6 @@ This is GOAIERP data from Jamal Moss.
 
 Take a quick look at the data spatially.
 ```{r, fig.width = 12, fig.height = 12}
-# coast mask
-# coast <- map("worldHires", regions = c("Canada", "USA"), plot = FALSE, fill = TRUE)
-# coast <- coast %>% st_as_sf() #%>% st_transform(crs = atlantis_bgm$extra$projection)
-
 ggplot()+
   geom_point(data = goaierp_data, aes(lon*1000, lat*1000, colour = log1p(biom_kgkm2)), size = 1.5)+
   scale_colour_viridis_c()+
@@ -54,14 +48,14 @@ ggplot()+
 ```
 
 Take a quick look at time series of total numbers CPUE from raw data. This makes little sense for GOAIERP data because the areas have different size, and different areas are surveyed in different years.
-```{r, fig.width = 6, fig.height = 4}
+```{r, fig.align="center"}
 biom_year <- goaierp_data %>% group_by(year) %>% summarise(biom = sum(log1p(biom_kgkm2), na.rm = TRUE))
 
 ggplot(biom_year, aes(year, log(biom)))+
   geom_point()+
   geom_path()+
   theme_minimal()+
-  labs(title = paste(goaierp_data$name,"total GOA CPUE from bottom \n trawl"))
+  labs(title = paste(goaierp_data$name,"total GOA CPUE from surface trawl"))
 ```
 
 The sampling design for GOAIERP surface trawl data is to survey different areas in different years. Similar to DFO data conceptually.
@@ -70,12 +64,44 @@ The sampling design for GOAIERP surface trawl data is to survey different areas 
 
 ## Create spatial mesh
 
-This is the mesh that the sdmTMB algorithm uses to estimate spatial autocorrelation. The speed of model running is highly dependent on number of knots. 100 is quite low, you'd want to make sure it was robust by checking multiple resolutions when you have a model you want to actually use (people use like 350-450 or something).
+Read in the Atlantis BGM, then turn the bottom trawl data to an sf object, reproject it, and then turn it back to coordinates.
+```{r}
+atlantis_bgm <- read_bgm('data/GOA_WGS84_V4_final.bgm')
+# utilities
+atlantis_crs <- atlantis_bgm$extra$projection
+
+# get coast
+coast <- map("worldHires", regions = c("USA","Canada"), plot = FALSE, fill = TRUE)
+coast_sf <- coast %>% st_as_sf() %>% st_transform(crs=atlantis_crs)
+
+goaierp_data_sf <- goaierp_data %>% 
+  mutate(lat=lat*1000, lon=lon*1000) %>%
+  st_as_sf(coords = c("lon", "lat"), crs = atlantis_crs) 
+```
+
+Adding an `sf` object of the coastline to incorporate in the mesh.
+```{r}
+data_bbox <- goaierp_data_sf %>% st_bbox()
+coast_mesh <- coast_sf %>% st_transform(crs=atlantis_bgm$extra$projection) %>%
+  st_crop(data_bbox)
+```
 
 **Note:** SPDE = Stochastic Partial Differential Equations approach. Some material can be found [here](https://becarioprecario.bitbucket.io/spde-gitbook/ch-intro.html#sec:spde), but basically it is a way of calculating the position of the mesh knots. 
+
+We take land barriers into account when building the mesh (see `sdmTMB` documentation). Although not so relevant for this data set.
 ```{r}
-goaierp_spde <- make_mesh(goaierp_data, c("lon", "lat"), cutoff = cutoff) # usually 450
-plot(goaierp_spde)
+goaierp_spde <- make_mesh(goaierp_data, c("lon", "lat"), cutoff = 20, type = "cutoff")
+
+# add barrier
+goaierp_spde <- add_barrier_mesh(
+  spde_obj = goaierp_spde,
+  barrier_sf = coast_mesh,
+  range_fraction = 0.1,
+  proj_scaling = 1000, # data km but projection m
+  plot = TRUE
+)
+
+goaierp_spde$mesh$n
 ```
 
 Check out the distribution of the biomass density response variable.
@@ -96,26 +122,26 @@ length(which(goaierp_data$biom_kgkm2 == 0))/nrow(goaierp_data)*100
 
 Model type: the distribution of the response variable plotted above should give a sense of what model is most appropriate. CPUE data for many of these species resemble a Tweedie distribution when log-transformed, so we use a Tweedie model with a log link. Some groups may warrant a different model, and this will be evaluated case-by-case depending on convergence issues, distribution of model residuals, and model skill metrics (see below).
 
-As a difference from the bottom trawl data, for surface trawl we use the distance from shore instead of depth as predictor. Distance from shore is in km here. We use a spline with 5 knots like in the depth models to start, but we will want to test this.
+As a difference from the bottom trawl data, for surface trawl we use the distance from shore instead of depth as predictor. Distance from shore is in km here. We use a spline with 3 knots like in the depth models.
 
 We run the model with year factor at first.
 ```{r, include = FALSE}
 start.time <- Sys.time()
+
 m_dist <- sdmTMB(
-  data = goaierp_data, 
-  formula = biom_kgkm2 ~ 0 + s(distance, k = 5) + as.factor(year), # predicting numbers - we will need numbers for Atlantis
-  time = "year", 
-  spde = goaierp_spde, 
-  reml = TRUE,
-  anisotropy = FALSE,
-  spatial_trend = FALSE, 
-  spatial_only = FALSE,
-  silent = FALSE,
-  control = sdmTMBcontrol(),
-  # nlminb_loops = 3,
-  # newton_steps = 10,
-  family = tweedie(link = "log"))
+    data = goaierp_data, 
+    formula = biom_kgkm2 ~ 0 + s(distance, k = 3) + as.factor(year), 
+    mesh = goaierp_spde, 
+    time = "year", 
+    spatial = 'on',
+    spatiotemporal = 'iid', # spatiotemporal random fields independent and identically distributed
+    reml = TRUE,
+    anisotropy = FALSE,
+    silent = FALSE,
+    family = tweedie(link = "log"))
+
 end.time <- Sys.time()
+
 time.taken_m_depth <- end.time - start.time
 time.taken_m_depth
 ```
@@ -123,37 +149,33 @@ time.taken_m_depth
 Rerun with extra optimization steps in case of gradient > 0.001.
 ```{r}
 if(abs(max(m_dist$gradients))>0.001){
+  
   m_dist <- sdmTMB(
-  data = race_data, 
-  formula = biom_kgkm2 ~ 0 + s(depth, k = 5) + as.factor(year), 
-  time = "year", 
-  spde = goaierp_spde, 
-  reml = TRUE,
-  anisotropy = FALSE,
-  spatial_trend = FALSE, 
-  spatial_only = FALSE,
-  silent = FALSE,
-  control = sdmTMBcontrol(),
-  nlminb_loops = 1,
-  newton_steps = 3,
-  family = tweedie(link = "log"))
+    data = goaierp_data, 
+    formula = biom_kgkm2 ~ 0 + s(distance, k = 3) + as.factor(year), 
+    mesh = goaierp_spde, 
+    time = "year", 
+    spatial = 'on',
+    spatiotemporal = 'iid', # spatiotemporal random fields independent and identically distributed
+    reml = TRUE,
+    anisotropy = FALSE,
+    silent = FALSE,
+    control = sdmTMBcontrol(nlminb_loops = 2, newton_loops = 3),
+    family = tweedie(link = "log"))
+  
 end.time <- Sys.time()
 }
 ```
 
-Check information on model convergence. From the nlminb help page we know that an integer 0 indicates succesful convergence. Additional information on convergence can be checked with m_depth$model$message. According to the original PORT optimization documentation, “Desirable return codes are 3, 4, 5, and sometimes 6”.
+Check information on model convergence. From [the nlminb help page](https://rdrr.io/r/stats/nlminb.html) we know that an integer 0 indicates succesful convergence. Additional information on convergence can be checked with m_depth\$model\$message. According to the original [PORT optimization documentation](https://web.archive.org/web/20070203144320/http://netlib.bell-labs.com/cm/cs/cstr/153.pdf), "Desirable return codes are 3, 4, 5, and sometimes 6".  
 ```{r}
 if(m_dist$model$convergence == 0){print("The model converged.")} else {print("Check convergence issue.")}
-m_dist$model$message
+m_dist$model$message # convergence message
+max(m_dist$gradients) # maximum gradient component 
+tidy(m_dist, effects = 'ran_pars') %>% filter(term=='range') %>% pull(estimate) # Matérn range
 ```
 
-```{r}
-max(m_dist$gradients)
-```
-
-```{r}
-m_dist$tmb_obj$report()$range
-```
+The Matérn range is a parameter that indicates the distance at which data points become essentially independent. A large range means that spatial autocorrelation decays more slowly with distance. A smaller range will require more knots. A range larger than the cutoff argument should be sensible.
 
 Check out model residuals.
 ```{r, fig.width = 6, fig.height = 4}
@@ -169,11 +191,12 @@ abline(a = 0, b = 1)
 
 Plot the response curve from the depth smooth term.
 ```{r}
-plot(m_dist$mgcv_mod, rug = TRUE)
+plot_smooth(m_dist, ggplot = T)
 ```
 
 Finally, plot the residuals in space. If residuals are constantly larger/smaller in some of the areas, it may be sign that the model is biased and it over/underpredicts consistently for some areas. Residuals should be randomly distributed in space. 
 
+For visualization purposes, multiply the coordinates by 1000 in the sf object to restore the correct scale.
 ```{r, fig.width = 12, fig.height=10}
 goaierp_sf <- goaierp_data %>% mutate(lon=lon*1000,lat=lat*1000) %>% st_as_sf(coords = c(x = "lon", y = "lat"), crs = atlantis_crs) # turn to spatial object
 
@@ -194,9 +217,10 @@ ggplot()+
 
 Take a grid (which must contain information on the predictors we used to build the model) and predict the biomass index over such grid based on the predictors. The grid is currently a regular grid with 10-km cell size, but 10 km might not be enough to get prediction points in all boxes - especially for a couple very small and narrow boxes at the western end of the model domain. Revisit this if necessary, but a finer mesh could be difficult to justify compared to the density of the survey data. The grid covers the entire Atlantis model domain, including the non-dynamic boundary boxes (deeper than 1000 m).
 
-Read in the Atlantis prediction grid (10 km) modified in Atlantis_grid_covars.R (code not included here).
+Read in the Atlantis prediction grid (10 km) modified in `Atlantis_grid_covars.R` (code not included here).
 
 **For GOAIERP:** This step will be different:
+
 - Read Atlantis grid.
 - Ditch depth.
 - Turn it to sf.
@@ -221,7 +245,7 @@ atlantis_grid_sf <- atlantis_grid %>% mutate(lon=lon*1000,lat=lat*1000) %>% st_a
 coord_lims <- atlantis_grid_sf %>% st_bbox()
 ```
 
-Plotting Canada as well here, only because if we leave that out we need to leave out the AI as well. It will be best to replace Canada predictions with Canada data.
+Plotting - entire model area from AI to BC.
 ```{r, fig.width = 12, fig.height = 10}
 ggplot()+
   geom_sf(data = atlantis_grid_sf, aes(color=log1p(estimates)), size = 2)+ # taking the log for visualisation
@@ -243,12 +267,12 @@ atlantis_grid_means <- atlantis_grid %>% group_by(year, box_id) %>%
 predictions_by_box <- atlantis_sf %>% inner_join(atlantis_grid_means, by = "box_id")
 ```
 
-See estimates per box for all years combined. Silence boundary boxes as they throw the scale out of whack (and they do not need predictions). Plot BC part of the model domain only.
+See estimates per box for all years combined. Silence boundary boxes as they throw the scale out of whack (and they do not need predictions).
 ```{r, fig.width = 12, fig.height = 10}
 predictions_by_box <- predictions_by_box %>% rowwise() %>% mutate(mean_estimates = ifelse(isTRUE(boundary), NA, mean_estimates))
 
 ggplot()+
-  geom_sf(data = predictions_by_box[predictions_by_box$box_id<92,], aes(fill = log1p(mean_estimates)))+ # taking the log for visualisation
+  geom_sf(data = predictions_by_box, aes(fill = log1p(mean_estimates)))+ # taking the log for visualisation
   scale_fill_viridis(name = expression(paste("Log(CPUE) kg ", km^-2)))+
   theme_minimal()+
   geom_sf(data = coast_sf)+
@@ -301,7 +325,7 @@ ggplot(data = atlantis_grid, aes(log1p(estimates)))+
 means_all_years <- predictions_by_box %>% group_by(box_id, area, boundary) %>% summarise(all_years_kgkm2 = mean(mean_estimates)) %>% ungroup()
 
 ggplot()+
-  geom_sf(data = means_all_years[means_all_years$box_id < 92,], aes(fill = log1p(all_years_kgkm2)))+ # log for visualisation
+  geom_sf(data = means_all_years, aes(fill = log1p(all_years_kgkm2)))+ # log for visualisation
   scale_fill_viridis(name = expression(paste("Log(CPUE) kg ", km^-2)))+
   geom_sf(data = coast_sf, colour = "black", fill = "grey80")+
   coord_sf(xlim = c(coord_lims$xmin,coord_lims$xmax), ylim=c(coord_lims$ymin,coord_lims$ymax))+
@@ -310,24 +334,21 @@ ggplot()+
 ```
 
 Let’s have a look at the variance per box over all years. We use the coefficient of variation, because CPUE varies widely between boxes.
-
 ```{r}
 cv_all_years <- predictions_by_box %>% group_by(box_id, area, boundary) %>% summarise(cv = sd(mean_estimates)/mean(mean_estimates)) %>% ungroup()
 ```
 
 ```{r}
 ggplot()+
-  geom_sf(data = cv_all_years[cv_all_years$box_id < 92,], aes(fill = cv))+
+  geom_sf(data = cv_all_years, aes(fill = cv))+
   scale_fill_viridis(name = "CV of CPUE")+
   geom_sf(data = coast_sf, colour = "black", fill = "grey80")+
   theme_minimal()+
   coord_sf(xlim = c(coord_lims$xmin,coord_lims$xmax), ylim=c(coord_lims$ymin,coord_lims$ymax))+
   labs(title = paste(goaierp_data$name, "CV of predicted CPUE by Atlantis box (1984-2019) - stage:", goaierp_data$stage, sep = " "))
 ```
-Very large uncertainties toward the AI, and outside the sampling area in general. For a lot of species this may need manual adjustment.
 
 Let’s see how estimated CPUE changes over time, per box.
-
 ```{r, fig.width =10, fig.height=18}
 predictions_by_box %>% 
   ggplot(aes(x = year,y = mean_estimates))+
@@ -336,8 +357,6 @@ predictions_by_box %>%
   theme_minimal()+
   facet_wrap(~.bx0, ncol=8, scales="free")
 ```
-
-Considerable variation over time. It may be worth assigning more weight to earlier years, although the distributions are supposed to be “generally representative” throughout the simulation, at least when it comes to S1-S4.
 
 # Model skill
 
@@ -367,7 +386,6 @@ goaierp_corr <- goaierp_data %>% left_join(goaierp_grid, by = c("year","distance
 ```{r}
 paste0("Pearson's coef observations vs predictions: ", cor(goaierp_corr$biom_kgkm2, goaierp_corr$predictions, use = "everything", method = "pearson"))
 ```
-What is a good value here?
 
 Plot.
 ```{r}
@@ -383,7 +401,6 @@ ggplot(goaierp_corr, aes(x = log1p(biom_kgkm2), y = log1p(predictions)))+ # log 
 These models often underpredict zeroes, i.e. they predict a catch where there was none. Does this happen randomly in space? Does it have a correlation of some kind with depth?
 
 Plot zero catch from the data and the relative predictions. Turn to sf for plotting.
-
 ```{r}
 goaierp_corr %>% filter(biom_kgkm2 == 0) %>%
   mutate(lon=lon*1000,lat=lat*1000) %>%
@@ -421,7 +438,6 @@ Normalised RMSE.
 rmse_cv <- sqrt(sum((goaierp_corr$predictions - goaierp_corr$biom_kgkm2)^2)/nrow(goaierp_corr))/(max(goaierp_corr$biom_kgkm2)-min(goaierp_corr$biom_kgkm2))*100 #### normalised rmse, expressed as a % of the range of observed biomass values, sort of approximates a coefficient of variation 
 paste("Normalised RMSE:", paste0(rmse_cv, "%"), sep = " ")
 ```
-What is a good value here?
 
 # Total biomass and biomass per box
 
@@ -441,7 +457,9 @@ Write out a .csv.
 ```{r}
 out <- means_alaska %>% st_set_geometry(NULL)
 
-write.csv(x = out, file = paste0("output/biomass/",goaierp_data$name[1],"_",goaierp_data$stage[1],"_GOAIERP.csv"), row.names = FALSE)
+write.csv(x = out, 
+          file = paste0("output_1/cpue_tables/",goaierp_data$name[1],"_",goaierp_data$stage[1],"_GOAIERP.csv"), 
+          row.names = FALSE)
 ```
 
 # Validation metrics
@@ -452,7 +470,7 @@ val <- data.frame(goaierp_data$name[1], # group
                   m_dist$model$convergence, # convergence
                   m_dist$model$message, # more convergence
                   max(m_dist$gradients), # max gradient
-                  m_dist$tmb_obj$report()$range, # practical range
+                  tidy(m_dist, effects = 'ran_pars') %>% filter(term=='range') %>% pull(estimate), # Matérn range
                   cor(goaierp_corr$biom_kgkm2, goaierp_corr$predictions, use = "everything", method = "pearson"), # correlation
                   sqrt(sum((goaierp_corr$predictions - goaierp_corr$biom_kgkm2)^2)/nrow(goaierp_corr)),# RMSE
                   sqrt(sum((goaierp_corr$predictions - goaierp_corr$biom_kgkm2)^2)/nrow(goaierp_corr))/(max(goaierp_corr$biom_kgkm2)-min(goaierp_corr$biom_kgkm2))*100 # NRMSE
@@ -462,6 +480,7 @@ val
 ```
 
 ```{r}
-write.csv(x = val, file = paste0("output/validation/",goaierp_data$name[1],"_",goaierp_data$stage[1],"_GOAIERP.csv"), row.names = FALSE)
+write.csv(x = val, 
+          file = paste0("output_1/validation_tables/",goaierp_data$name[1],"_",goaierp_data$stage[1],"_GOAIERP.csv"), 
+          row.names = FALSE)
 ```
-
