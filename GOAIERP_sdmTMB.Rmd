@@ -444,21 +444,19 @@ paste("Normalised RMSE:", paste0(rmse_cv, "%"), sep = " ")
 The current estimated CPUE is in kg km$^{-2}$. So, just I just turn that into biomss per box. Remember that the area is in m$^2$ for the boxes, so need to divide by 1,000,000.
 ```{r}
 means_all_years <- means_all_years %>% mutate(biomass = all_years_kgkm2*area*1e-06*1e-03) # dividing by 1000 to get tons instead of kg
-
-means_alaska <- means_all_years %>% filter(box_id<92)
 ```
 
 ```{r}
-means_alaska %>% select(box_id, all_years_kgkm2, biomass) %>% st_set_geometry(NULL) %>% kable(align = 'lccc', format = "markdown", 
+means_all_years %>% select(box_id, all_years_kgkm2, biomass) %>% st_set_geometry(NULL) %>% kable(align = 'lccc', format = "markdown", 
       col.names = c("Box", "CPUE (kg km-2)", "Biomass (mt)"))
 ```
 
 Write out a .csv.
 ```{r}
-out <- means_alaska %>% st_set_geometry(NULL)
+out <- means_all_years %>% st_set_geometry(NULL)
 
 write.csv(x = out, 
-          file = paste0("output_1/cpue_tables/",goaierp_data$name[1],"_",goaierp_data$stage[1],"_GOAIERP.csv"), 
+          file = paste0("output/cpue_tables/",goaierp_data$name[1],"_",goaierp_data$stage[1],"_GOAIERP.csv"), 
           row.names = FALSE)
 ```
 
@@ -481,6 +479,6 @@ val
 
 ```{r}
 write.csv(x = val, 
-          file = paste0("output_1/validation_tables/",goaierp_data$name[1],"_",goaierp_data$stage[1],"_GOAIERP.csv"), 
+          file = paste0("output/validation_tables/",goaierp_data$name[1],"_",goaierp_data$stage[1],"_GOAIERP.csv"), 
           row.names = FALSE)
 ```

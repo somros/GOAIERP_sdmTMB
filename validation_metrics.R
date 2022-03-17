@@ -2,9 +2,9 @@
 library(tidyverse)
 library(data.table)
 
-goaierp_files <- list.files("output/validation/", full.names = TRUE)
+goaierp_files <- list.files("output/validation_tables/", full.names = TRUE)
 
-goaierp_titles <- list.files("output/validation/", full.names = FALSE)
+goaierp_titles <- list.files("output/validation_tables/", full.names = FALSE)
 
 goaierp_titles <- gsub("_GOAIERP.csv","",goaierp_titles)
 

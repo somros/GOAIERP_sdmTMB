@@ -119,7 +119,7 @@ goaierp_knitter <- function(this_group){
     # pass this on to the sdmTMB markdown
     rmarkdown::render(
       'GOAIERP_sdmTMB.Rmd',
-      output_file = paste0('output_1/', this_group, '_', this_stage, '_', cutoff, '.html')
+      output_file = paste0('output/', this_group, '_', this_stage, '_', cutoff, '.html')
     )
 
     # apply to all stages for this species
